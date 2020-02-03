@@ -4005,14 +4005,22 @@ public class TestVectorOrcFile {
   }
 
   @Test
-  public void testColumnEncryption() throws Exception {
-    Assume.assumeTrue(fileFormat != OrcFile.Version.V_0_11);
+  public void testColumnEncryptionNoMasking() throws Exception {
+    testColumnEncryptionBase(false);
+  }
+
+  @Test
+  public void testColumnEncryptionWithMasking() throws Exception {
+    testColumnEncryptionBase(true);
+  }
+
+  public void testColumnEncryptionBase(boolean enableMask) throws Exception {
     final int ROWS = 1000;
     final int SEED = 2;
     final Random random = new Random(SEED);
 
     TypeDescription schema =
-        TypeDescription.fromString("struct<i:int,norm:int,x:array<string>>");
+        TypeDescription.fromString("struct<i:int,norm:int,x:string>");
 
     byte[] piiKey = new byte[16];
     random.nextBytes(piiKey);
@@ -4021,116 +4029,30 @@ public class TestVectorOrcFile {
     InMemoryKeystore keys = new InMemoryKeystore(random)
         .addKey("pii", EncryptionAlgorithm.AES_CTR_128, piiKey)
         .addKey("credit", EncryptionAlgorithm.AES_CTR_256, creditKey);
-    Writer writer = OrcFile.createWriter(testFilePath,
-        OrcFile.writerOptions(conf)
+    WriterOptions options = OrcFile.writerOptions(conf)
             .setSchema(schema)
             .version(fileFormat)
             .setKeyProvider(keys)
-            .encrypt("pii:i;credit:x"));
+            .encrypt("pii:i;credit:x");
+
+    Writer writer = OrcFile.createWriter(testFilePath, enableMask ? options.masks("sha256:x") : options);
     VectorizedRowBatch batch = schema.createRowBatch();
     batch.size = ROWS;
     LongColumnVector i = (LongColumnVector) batch.cols[0];
     LongColumnVector norm = (LongColumnVector) batch.cols[1];
-    ListColumnVector x = (ListColumnVector) batch.cols[2];
-    BytesColumnVector xElem = (BytesColumnVector) x.child;
-    xElem.ensureSize(3 * ROWS, false);
+
+    BytesColumnVector x = (BytesColumnVector) batch.cols[2];
+    x.ensureSize(3 * ROWS, false);
     for(int r=0; r < ROWS; ++r) {
       i.vector[r] = r * 3;
       norm.vector[r] = r * 5;
-      int start = x.childCount;
-      x.offsets[r] = start;
-      x.lengths[r] = 3;
-      x.childCount += x.lengths[r];
-      for(int child=0; child < x.lengths[r]; ++child) {
-        xElem.setVal(start + child,
-            String.format("%d.%d", r, child).getBytes(StandardCharsets.UTF_8));
-      }
+        x.setVal(r,
+            String.format("%d.%d", r, r).getBytes(StandardCharsets.UTF_8));
     }
     writer.addRowBatch(batch);
     writer.close();
-
-    // Read without any keys
-    Reader reader = OrcFile.createReader(testFilePath,
-        OrcFile.readerOptions(conf)
-               .setKeyProvider(new InMemoryKeystore()));
-    ColumnStatistics[] stats = reader.getStatistics();
-    assertEquals(ROWS, stats[0].getNumberOfValues());
-
-    assertEquals(0, stats[1].getNumberOfValues());
-    assertEquals(true, stats[1].hasNull());
-    assertEquals(ROWS, stats[2].getNumberOfValues());
-    assertEquals(0, ((IntegerColumnStatistics) stats[2]).getMinimum());
-    assertEquals(ROWS * 5 - 5, ((IntegerColumnStatistics) stats[2]).getMaximum());
-    assertEquals(0, stats[3].getNumberOfValues());
-    assertEquals(0, stats[4].getNumberOfValues());
-
-    RecordReader rows = reader.rows();
-    batch = reader.getSchema().createRowBatch();
-    i = (LongColumnVector) batch.cols[0];
-    norm = (LongColumnVector) batch.cols[1];
-    x = (ListColumnVector) batch.cols[2];
-
-    // ensure that we get the right number of rows with all nulls
-    assertTrue(rows.nextBatch(batch));
-    assertEquals(ROWS, batch.size);
-    assertEquals(true, i.isRepeating);
-    assertEquals(false, i.noNulls);
-    assertEquals(true, i.isNull[0]);
-    assertEquals(true, x.isRepeating);
-    assertEquals(false, x.noNulls);
-    assertEquals(true, x.isNull[0]);
-    for(int r=0; r < ROWS; ++r) {
-      assertEquals("row " + r, r * 5, norm.vector[r]);
-    }
-    assertFalse(rows.nextBatch(batch));
-    rows.close();
-
-    // Add a new version of the pii key
-    random.nextBytes(piiKey);
-    keys.addKey("pii", 1, EncryptionAlgorithm.AES_CTR_128, piiKey);
-
-    // Read with the keys
-    reader = OrcFile.createReader(testFilePath,
-        OrcFile.readerOptions(conf)
-               .setKeyProvider(keys));
-    stats = reader.getStatistics();
-    assertEquals(ROWS, stats[0].getNumberOfValues());
-    assertEquals(ROWS, stats[1].getNumberOfValues());
-    assertEquals(0, ((IntegerColumnStatistics) stats[1]).getMinimum());
-    assertEquals(3 * (ROWS - 1), ((IntegerColumnStatistics) stats[1]).getMaximum());
-    assertEquals(0, ((IntegerColumnStatistics) stats[2]).getMinimum());
-    assertEquals(5 * (ROWS - 1), ((IntegerColumnStatistics) stats[2]).getMaximum());
-    assertEquals(ROWS, stats[3].getNumberOfValues());
-    assertEquals(3 * ROWS, stats[4].getNumberOfValues());
-    assertEquals("0.0", ((StringColumnStatistics)stats[4]).getMinimum());
-    assertEquals("999.2", ((StringColumnStatistics)stats[4]).getMaximum());
-
-    rows = reader.rows();
-    batch = reader.getSchema().createRowBatch();
-    i = (LongColumnVector) batch.cols[0];
-    norm = (LongColumnVector) batch.cols[1];
-    x = (ListColumnVector) batch.cols[2];
-    xElem = (BytesColumnVector) x.child;
-    assertTrue(rows.nextBatch(batch));
-    assertEquals(ROWS, batch.size);
-    assertEquals(false, i.isRepeating);
-    assertEquals(false, x.isRepeating);
-    assertEquals(false, xElem.isRepeating);
-    assertEquals(true, i.noNulls);
-    assertEquals(true, x.noNulls);
-    assertEquals(true, xElem.noNulls);
-    for(int r=0; r < ROWS; ++r) {
-      assertEquals("row " + r, r * 3, i.vector[r]);
-      assertEquals("row " + r, r * 5, norm.vector[r]);
-      assertEquals("row " + r, r * 3, x.offsets[r]);
-      assertEquals("row " + r, 3, x.lengths[r]);
-      for(int child=0; child < x.lengths[r]; ++child) {
-        assertEquals("row " + r + "." + child, String.format("%d.%d", r, child),
-            xElem.toString((int) x.offsets[r] + child));
-      }
-    }
-    assertFalse(rows.nextBatch(batch));
-    rows.close();
+    System.out.println(enableMask ? "Enable Masking" : "No masking");
+    System.out.println("Size : " + testFilePath.getFileSystem(new Configuration()).getFileStatus(testFilePath).getLen());
   }
 
   @Test
