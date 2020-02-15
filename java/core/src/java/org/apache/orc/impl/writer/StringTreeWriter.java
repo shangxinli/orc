@@ -36,6 +36,9 @@ public class StringTreeWriter extends StringBaseTreeWriter {
   public void writeBatch(ColumnVector vector, int offset,
                          int length) throws IOException {
     super.writeBatch(vector, offset, length);
+    StringBuilder sb = new StringBuilder();
+    vector.stringifyValue(sb, 0);
+    System.out.println("writeBatch: " + sb.toString());
     BytesColumnVector vec = (BytesColumnVector) vector;
     if (vector.isRepeating) {
       if (vector.noNulls || !vector.isNull[0]) {

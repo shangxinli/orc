@@ -85,6 +85,7 @@ public class EncryptionTreeWriter implements TreeWriter {
   public void writeBatch(ColumnVector vector, int offset,
                          int length) throws IOException {
     scratch.ensureSize(length, false);
+    System.out.println("childrenWriters.length: " + childrenWriters.length);
     for(int alt=0; alt < childrenWriters.length; ++alt) {
       // if there is a mask, apply it to each column
       if (masks[alt] != null) {

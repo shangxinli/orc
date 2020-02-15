@@ -54,6 +54,7 @@ public class StructTreeWriter extends TreeWriterBase {
     // I'm assuming that the root column isn't nullable so that I don't need
     // to update isPresent.
     for (int i = 0; i < childrenWriters.length; ++i) {
+      System.out.println("childrenWriters: -----" + childrenWriters.length);
       childrenWriters[i].writeBatch(batch.cols[i], offset, length);
     }
   }

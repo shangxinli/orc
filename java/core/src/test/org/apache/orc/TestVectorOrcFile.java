@@ -91,6 +91,7 @@ import java.util.Random;
 import java.util.TimeZone;
 import java.util.function.IntFunction;
 
+import static junit.framework.Assert.assertEquals;
 import static junit.framework.TestCase.assertNotNull;
 import static org.junit.Assert.*;
 
@@ -4015,44 +4016,82 @@ public class TestVectorOrcFile {
   }
 
   public void testColumnEncryptionBase(boolean enableMask) throws Exception {
-    final int ROWS = 1000;
+    final int ROWS = 1;
     final int SEED = 2;
     final Random random = new Random(SEED);
 
+    // set up schema
     TypeDescription schema =
-        TypeDescription.fromString("struct<i:int,norm:int,x:string>");
+            TypeDescription.fromString("struct<x:string>");
 
-    byte[] piiKey = new byte[16];
-    random.nextBytes(piiKey);
+    // set up key
     byte[] creditKey = new byte[32];
     random.nextBytes(creditKey);
     InMemoryKeystore keys = new InMemoryKeystore(random)
-        .addKey("pii", EncryptionAlgorithm.AES_CTR_128, piiKey)
-        .addKey("credit", EncryptionAlgorithm.AES_CTR_256, creditKey);
+            .addKey("credit", EncryptionAlgorithm.AES_CTR_256, creditKey);
+
+    // set up configuration
     WriterOptions options = OrcFile.writerOptions(conf)
             .setSchema(schema)
             .version(fileFormat)
             .setKeyProvider(keys)
-            .encrypt("pii:i;credit:x");
-
+            .encrypt("credit:x");
     Writer writer = OrcFile.createWriter(testFilePath, enableMask ? options.masks("sha256:x") : options);
     VectorizedRowBatch batch = schema.createRowBatch();
     batch.size = ROWS;
-    LongColumnVector i = (LongColumnVector) batch.cols[0];
-    LongColumnVector norm = (LongColumnVector) batch.cols[1];
 
-    BytesColumnVector x = (BytesColumnVector) batch.cols[2];
+    //Set up value
+    BytesColumnVector x = (BytesColumnVector) batch.cols[0];
     x.ensureSize(3 * ROWS, false);
     for(int r=0; r < ROWS; ++r) {
-      i.vector[r] = r * 3;
-      norm.vector[r] = r * 5;
-        x.setVal(r,
-            String.format("%d.%d", r, r).getBytes(StandardCharsets.UTF_8));
+      x.setVal(r,
+              String.format("%d.%d", r, r).getBytes(StandardCharsets.UTF_8));
     }
+
+    //write
     writer.addRowBatch(batch);
     writer.close();
+
+    //output
     System.out.println(enableMask ? "Enable Masking" : "No masking");
+    System.out.println(testFilePath.toString());
     System.out.println("Size : " + testFilePath.getFileSystem(new Configuration()).getFileStatus(testFilePath).getLen());
+
+    // Read without any keys
+    Reader readerWithKey = OrcFile.createReader(testFilePath,
+            OrcFile.readerOptions(conf)
+                    .setKeyProvider(keys));
+
+    RecordReader plainTextRow = readerWithKey.rows();
+    batch = readerWithKey.getSchema().createRowBatch();
+    while (plainTextRow.nextBatch(batch)) {
+      for(int r=0; r < batch.size; ++r) {
+        byte[] data = ((BytesColumnVector) batch.cols[0]).vector[r];
+        //  The print out is exact value of the raw  value
+        System.out.println("raw data: " + new String(data));
+      }
+    }
+    plainTextRow.close();
+
+    if (!enableMask) {
+      return;
+    }
+
+    // Read without any keys
+    Reader readerMask = OrcFile.createReader(testFilePath,
+            OrcFile.readerOptions(conf)
+                    .setKeyProvider(new InMemoryKeystore()));
+
+    RecordReader rowsMasked = readerMask.rows();
+    batch = readerMask.getSchema().createRowBatch();
+    while (rowsMasked.nextBatch(batch)) {
+      for(int r=0; r < batch.size; ++r) {
+        byte[] data = ((BytesColumnVector) batch.cols[0]).vector[r];
+        // The print out is exact value of the masked value
+        System.out.println("masked data: " + new String(data));
+      }
+    }
+    rowsMasked.close();
   }
 
   @Test
