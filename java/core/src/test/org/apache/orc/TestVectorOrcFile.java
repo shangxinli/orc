@@ -78,6 +78,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.sql.Date;
 import java.sql.Timestamp;
 import java.util.ArrayList;
@@ -89,6 +90,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.TimeZone;
+import java.util.concurrent.TimeUnit;
 import java.util.function.IntFunction;
 
 import static junit.framework.Assert.assertEquals;
@@ -100,6 +102,9 @@ import static org.junit.Assert.*;
  */
 @RunWith(Parameterized.class)
 public class TestVectorOrcFile {
+
+  private static SecureRandom random = new SecureRandom();
+
 
   @Parameterized.Parameter
   public OrcFile.Version fileFormat;
@@ -4007,16 +4012,29 @@ public class TestVectorOrcFile {
 
   @Test
   public void testColumnEncryptionNoMasking() throws Exception {
-    testColumnEncryptionBase(false);
+    testColumnEncryptionBase(false, false);
   }
 
   @Test
   public void testColumnEncryptionWithMasking() throws Exception {
-    testColumnEncryptionBase(true);
+    testColumnEncryptionBase(true, false);
   }
 
-  public void testColumnEncryptionBase(boolean enableMask) throws Exception {
-    final int ROWS = 1;
+  @Test
+  public void testColumnEncryptionNoMaskingForPerf() throws Exception {
+    // No Masking takes: 209 Millis
+    testColumnEncryptionBase(false, true);
+  }
+
+  @Test
+  public void testColumnEncryptionWithMaskingForPerf() throws Exception {
+    // Enable Masking takes: 257 Millis
+    testColumnEncryptionBase(true, true);
+  }
+
+  public void testColumnEncryptionBase(boolean enableMask, boolean perfTest) throws Exception {
+    //When ROWS > 100,000, it throws exception
+    final int ROWS = perfTest ? 10000 : 1;
     final int SEED = 2;
     final Random random = new Random(SEED);
 
@@ -4042,15 +4060,23 @@ public class TestVectorOrcFile {
 
     //Set up value
     BytesColumnVector x = (BytesColumnVector) batch.cols[0];
+
     x.ensureSize(3 * ROWS, false);
     for(int r=0; r < ROWS; ++r) {
-      x.setVal(r,
-              String.format("%d.%d", r, r).getBytes(StandardCharsets.UTF_8));
+      x.setVal(r, generateRandomString(r % 1000).getBytes(StandardCharsets.UTF_8));
     }
 
     //write
+    long start = System.currentTimeMillis();
     writer.addRowBatch(batch);
+    String prefix = enableMask ? "Enable Masking takes: " : "No Masking takes: ";
+    long duration =  System.currentTimeMillis() - start;
+    System.out.println(prefix + duration + " Millis");
     writer.close();
+
+    if (perfTest) {
+      return;
+    }
 
     //output
     System.out.println(enableMask ? "Enable Masking" : "No masking");
@@ -4092,6 +4118,27 @@ public class TestVectorOrcFile {
       }
     }
     rowsMasked.close();
+  }
+
+  private static final String CHAR_LOWER = "abcdefghijklmnopqrstuvwxyz";
+  private static final String CHAR_UPPER = CHAR_LOWER.toUpperCase();
+  private static final String NUMBER = "0123456789";
+
+  private static final String DATA_FOR_RANDOM_STRING = CHAR_LOWER + CHAR_UPPER + NUMBER;
+
+
+  private static String generateRandomString(int length) {
+    StringBuilder sb = new StringBuilder(length);
+    for (int i = 0; i < length; i++) {
+      // 0-62 (exclusive), random returns 0-61
+      int rndCharAt = random.nextInt(DATA_FOR_RANDOM_STRING.length());
+      char rndChar = DATA_FOR_RANDOM_STRING.charAt(rndCharAt);
+
+      sb.append(rndChar);
+    }
+
+    return sb.toString();
+
   }
 
   @Test
